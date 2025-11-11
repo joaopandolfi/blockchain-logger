@@ -1,0 +1,146 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: logger-{ENVIRONMENT}
+  name: logger
+  labels:
+    name: logger
+spec:
+  selector:
+    matchLabels:
+      name: logger
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        name: logger
+        app: logger
+    spec:
+      volumes:
+      - name: service-account-credentials-volume
+        secret:
+          secretName: gcp-event-handler
+          items:
+          - key: sa_json
+            path: sa_credentials.json
+      containers:
+        - image: {KUBE_URL}:{VERSION}
+          volumeMounts:
+            - name: service-account-credentials-volume
+              mountPath: /etc/gcp
+              readOnly: true
+          imagePullPolicy: Always
+          name: logger
+          resources:
+            requests:
+              cpu: 100m
+              memory: 250Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          env:
+            - name: TZ
+              value: America/Sao_Paulo
+            - name: SNAKE_DEFAULT
+              value: "false"
+            - name: SYSTEM_ID
+              value: "logger"
+            - name: BCRYPT_COST
+              value: "12"
+            - name: SERVER_PORT
+              value: "5656"  
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /etc/gcp/sa_credentials.json
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: jwt
+                  key: JWT_SECRET
+            #
+            - name: POSTGRESQL_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: postgresdb
+                  key: PORT
+            - name: POSTGRESQL_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: postgresdb
+                  key: HOST
+            - name: POSTGRESQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgresdb
+                  key: USER
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresdb
+                  key: PASSWORD
+            - name: POSTGRESQL_DB
+              valueFrom:
+                secretKeyRef:
+                  name: logger
+                  key: POSTGRESQL_DB
+            #
+            - name: SLACK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: slack-logger
+                  key: SLACK_TOKEN
+            - name: SLACK_WEBHOOK
+              valueFrom:
+                secretKeyRef:
+                  name: slack-logger
+                  key: SLACK_WEBHOOK
+            - name: SLACK_CHANNEL
+              valueFrom:
+                secretKeyRef:
+                  name: slack-logger
+                  key: SLACK_CHANNEL
+            #
+            - name: JAEGER_ENVIRONMENT
+              value: .{ENVIRONMENT}
+            - name: JAEGER_AGENT_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: jaeger
+                  key: JAEGER_AGENT_HOST
+            - name: JAEGER_SAMPLER_TYPE
+              valueFrom:
+                secretKeyRef:
+                  name: jaeger
+                  key: JAEGER_SAMPLER_TYPE
+            - name: JAEGER_SAMPLER_PARAM
+              valueFrom:
+                secretKeyRef:
+                  name: jaeger
+                  key: JAEGER_SAMPLER_PARAM
+            - name: JAEGER_REPORTER_LOG_SPANS
+              valueFrom:
+                secretKeyRef:
+                  name: jaeger
+                  key: JAEGER_REPORTER_LOG_SPANS
+          ports:
+            - containerPort: 5656
+              name: logger
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: logger-{ENVIRONMENT}
+  name: logger
+  labels:
+    app: logger
+spec:
+  selector:
+    name: logger
+  ports:
+  - port: 80
+    name: auth-ingress
+    targetPort: 5656

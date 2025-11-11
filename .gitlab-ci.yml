@@ -1,0 +1,75 @@
+image: google/cloud-sdk:latest
+
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  SERVICE_NAME: logger
+  
+stages:
+  - test
+  - sonarqube-check
+  - build
+  - deploy
+
+# GCP preprare machine step
+.prepare_step: &prepare_step
+  - ENVIRONMENT=$(echo $CI_COMMIT_TAG | cut -d '-' -f2)
+  - VERSION=$(echo $CI_COMMIT_TAG | cut -d '-' -f3)
+  - sed -i "s/{VERSION}/$VERSION/g" deployment.yaml
+  - sed -i "s/{ENVIRONMENT}/$ENVIRONMENT/g" deployment.yaml
+  - echo $GCP_SERVICE_ACCOUNT > gcloud-service-key.json # Save Google cloud contents in a temporary json file
+  - gcloud auth activate-service-account --key-file gcloud-service-key.json # Activate your service account
+  - export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+  - gcloud config set project $GCP_PROJECT_ID #Set the GCP Project ID to the variable name
+  - gcloud auth configure-docker southamerica-east1-docker.pkg.dev --quiet
+
+services:
+  - docker:18.09.7-dind
+
+test:
+  image: golang:1.22.4
+  stage: test
+  rules:
+    - if: $CI_COMMIT_TAG != null # release-stag-1.1 OR release-prod-2.2
+      when: always
+  script:
+    - make setup
+    - make test
+    - make cover
+
+sonarqube-check:
+  stage: sonarqube-check
+  needs: ["test"]
+  image: 
+    name: sonarsource/sonar-scanner-cli:latest
+    entrypoint: [""]
+  rules:
+    - if: $CI_COMMIT_TAG != null
+  cache:
+    key: "${CI_JOB_NAME}"
+    paths:
+      - .sonar/cache
+  script: 
+    - sonar-scanner
+  allow_failure: true
+
+build:
+  stage: build
+  needs: ["sonarqube-check"]
+  rules:
+    - if: $CI_COMMIT_TAG != null
+  script:
+    - *prepare_step
+    - docker build . --tag $SERVICE_NAME:$VERSION
+    - docker tag $SERVICE_NAME:$VERSION $GKE_CLUSTER_REGION-docker.pkg.dev/$GCP_PROJECT_ID/kubernetes/$SERVICE_NAME:$VERSION
+    - docker push $GKE_CLUSTER_REGION-docker.pkg.dev/$GCP_PROJECT_ID/kubernetes/$SERVICE_NAME:$VERSION
+
+deploy:
+  stage: deploy
+  needs: ["build"]
+  rules:
+    - if: $CI_COMMIT_TAG != null
+  script:
+    - *prepare_step
+    - gcloud container clusters get-credentials $GKE_CLUSTER_NAME --region $GKE_CLUSTER_REGION --project $GCP_PROJECT_ID
+    - kubectl apply -n logger-$ENVIRONMENT  -f deployment.yaml
